@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Üç Beş Yedi - Online</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --accent: #38bdf8;
+      --text: #f8fafc;
+      --chip-bg: #334155;
+      --chip-sel: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+    body { background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 15px; }
+    .card { background: var(--card); padding: 24px; border-radius: 16px; width: 100%; max-width: 480px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    h1 { text-align: center; color: var(--accent); margin-bottom: 15px; }
+    
+    .screen { display: none; }
+    .screen.active { display: block; }
+    
+    input, button { width: 100%; padding: 12px; margin-top: 10px; border-radius: 8px; border: none; font-size: 1rem; }
+    input { background: #0f172a; color: #fff; border: 1px solid #334155; }
+    button { background: var(--accent); color: #000; font-weight: bold; cursor: pointer; }
+    button:hover { opacity: 0.9; }
+
+    .scoreboard { display: flex; justify-content: space-between; background: #0f172a; padding: 12px; border-radius: 8px; margin: 15px 0; }
+    .player { text-align: center; }
+    .player.active { color: var(--accent); font-weight: bold; }
+
+    .board-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 8px; }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chip { width: 32px; height: 32px; border-radius: 50%; background: var(--chip-bg); border: 2px solid #475569; cursor: pointer; }
+    .chip.selected { background: var(--chip-sel); border-color: #fbbf24; }
+
+    .status { text-align: center; margin-top: 10px; font-weight: bold; color: #f59e0b; }
+    .room-code { text-align: center; font-size: 1.2rem; margin-bottom: 10px; color: #a855f7; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h1>Üç Beş Yedi Online</h1>
+
+    <!-- Lobi Ekranı -->
+    <div id="lobby-screen" class="screen active">
+      <input type="text" id="username" placeholder="Oyuncu Adınız">
+      <button onclick="createRoom()">Oda Oluştur</button>
+      <hr style="margin: 15px 0; border-color: #334155;">
+      <input type="text" id="room-input" placeholder="Oda Kodunu Girin (Örn: A1B2C)">
+      <button onclick="joinRoom()" style="background: #a855f7; color:#fff;">Odaya Katıl</button>
+    </div>
+
+    <!-- Oyun Ekranı -->
+    <div id="game-screen" class="screen">
+      <div class="room-code" id="room-display">Oda: -</div>
+      
+      <div class="scoreboard">
+        <div class="player" id="p1-display">P1: 0</div>
+        <div class="player" id="p2-display">P2: 0</div>
+      </div>
+
+      <div id="board"></div>
+
+      <button id="confirm-btn" onclick="confirmTurn()">Hamleyi Onayla</button>
+      <button onclick="resetGame()" style="background: #ef4444; color: #fff; margin-top: 6px;">Yeniden Başlat</button>
+      <div class="status" id="status-msg">Rakip bekleniyor...</div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    let myRoomId = null;
+    let myPlayerIndex = null;
+    let currentGameState = null;
+
+    function createRoom() {
+      const name = document.getElementById('username').value || 'Oyuncu 1';
+      socket.emit('createRoom', { p1Name: name });
+    }
+
+    function joinRoom() {
+      const name = document.getElementById('username').value || 'Oyuncu 2';
+      const code = document.getElementById('room-input').value.toUpperCase().trim();
+      if (!code) return alert('Lütfen oda kodu girin!');
+      socket.emit('joinRoom', { roomId: code, p2Name: name });
+    }
+
+    socket.on('roomCreated', ({ roomId, playerIndex }) => {
+      myRoomId = roomId;
+      myPlayerIndex = playerIndex;
+      showGameScreen();
+      document.getElementById('room-display').innerText = `Oda Kodu: ${roomId}`;
+      document.getElementById('status-msg').innerText = 'Arkadaşına bu kodu ver ve girmesini bekle...';
+    });
+
+    socket.on('roomJoined', ({ roomId, playerIndex }) => {
+      myRoomId = roomId;
+      myPlayerIndex = playerIndex;
+      showGameScreen();
+      document.getElementById('room-display').innerText = `Oda Kodu: ${roomId}`;
+    });
+
+    socket.on('gameStart', (room) => {
+      currentGameState = room;
+      renderGame();
+    });
+
+    socket.on('updateSelection', ({ selectedRow, selectedCount }) => {
+      if (!currentGameState) return;
+      currentGameState.selectedRow = selectedRow;
+      currentGameState.selectedCount = selectedCount;
+      renderGame();
+    });
+
+    socket.on('turnUpdate', (room) => {
+      currentGameState = room;
+      renderGame();
+    });
+
+    socket.on('gameOver', ({ board, winner, loser, players }) => {
+      currentGameState.board = board;
+      currentGameState.players = players;
+      renderGame();
+      document.getElementById('status-msg').innerText = `🎉 ${loser} son taşı aldı! ${winner} KAZANDI!`;
+      document.getElementById('confirm-btn').disabled = true;
+    });
+
+    socket.on('gameReset', (room) => {
+      currentGameState = room;
+      document.getElementById('confirm-btn').disabled = false;
+      renderGame();
+    });
+
+    socket.on('errorMsg', (msg) => alert(msg));
+
+    function showGameScreen() {
+      document.getElementById('lobby-screen').classList.remove('active');
+      document.getElementById('game-screen').classList.add('active');
+    }
+
+    function renderGame() {
+      if (!currentGameState) return;
+
+      // Skorları Güncelle
+      const p1 = currentGameState.players[0];
+      const p2 = currentGameState.players[1] || { name: 'Bekleniyor...', score: 0 };
+      
+      document.getElementById('p1-display').innerText = `${p1.name}: ${p1.score}`;
+      document.getElementById('p2-display').innerText = `${p2.name}: ${p2.score}`;
+
+      document.getElementById('p1-display').className = 'player ' + (currentGameState.currentTurn === 0 ? 'active' : '');
+      document.getElementById('p2-display').className = 'player ' + (currentGameState.currentTurn === 1 ? 'active' : '');
+
+      // Tahtayı Çiz
+      const boardDiv = document.getElementById('board');
+      boardDiv.innerHTML = '';
+
+      currentGameState.board.forEach((count, rIdx) => {
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'board-row';
+        rowDiv.innerHTML = `<span style="width:50px; font-size:0.8rem">${rIdx+1}. Sıra</span>`;
+
+        const chipsDiv = document.createElement('div');
+        chipsDiv.className = 'chips';
+
+        for (let i = 0; i < count; i++) {
+          const chip = document.createElement('div');
+          chip.className = 'chip';
+
+          if (currentGameState.selectedRow === rIdx && i >= count - currentGameState.selectedCount) {
+            chip.classList.add('selected');
+          }
+
+          chip.onclick = () => onChipClick(rIdx, i, count);
+          chipsDiv.appendChild(chip);
+        }
+
+        rowDiv.appendChild(chipsDiv);
+        boardDiv.appendChild(rowDiv);
+      });
+
+      // Sıra Durumu
+      const isMyTurn = myPlayerIndex === currentGameState.currentTurn;
+      if (currentGameState.players.length < 2) {
+        document.getElementById('status-msg').innerText = 'Rakip bekleniyor...';
+      } else {
+        document.getElementById('status-msg').innerText = isMyTurn ? 'Sıra Sende!' : 'Rakibin hamlesi bekleniyor...';
+      }
+    }
+
+    function onChipClick(rIdx, chipIdx, total) {
+      if (myPlayerIndex !== currentGameState.currentTurn) return; // Sıra sende değilse engelle
+
+      let count = total - chipIdx;
+      if (currentGameState.selectedRow !== null && currentGameState.selectedRow !== rIdx) {
+        count = total - chipIdx;
+      }
+      
+      socket.emit('selectChips', { roomId: myRoomId, rIdx, count });
+    }
+
+    function confirmTurn() {
+      if (myPlayerIndex !== currentGameState.currentTurn) return;
+      socket.emit('confirmTurn', { roomId: myRoomId });
+    }
+
+    function resetGame() {
+      socket.emit('resetGame', { roomId: myRoomId });
+    }
+  </script>
+</body>
+</html>
